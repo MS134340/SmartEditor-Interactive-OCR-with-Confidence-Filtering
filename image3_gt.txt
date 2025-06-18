@@ -1,0 +1,8 @@
+Welcome to our Three.js cheat sheet! This guide
+provides a quick reference to the fundamental
+concepts and techniques used in Three.js, a powerful
+JavaScript library for creating 3D graphics and
+animations in the browser.
+Whether you're a beginner or an experienced dev, this
+cheat sheet is designed to help you quickly find and
+use the most commonly used Three.js features.
