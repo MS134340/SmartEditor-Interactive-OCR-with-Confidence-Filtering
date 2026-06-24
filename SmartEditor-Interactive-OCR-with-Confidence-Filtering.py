@@ -8,6 +8,7 @@ provides a Tkinter interface for users to review and edit the extracted text.
 """
 import os
 import cv2
+import threading
 import pytesseract
 import numpy as np
 from PIL import Image, ImageTk
@@ -86,32 +87,59 @@ def prepare(img):
 
 def ocr(img):
     """
-    Extracts text from the image using Tesseract OCR.
+    Extracts text and confidence scores from the image using Tesseract OCR.
 
     Args:
         img (numpy.ndarray): The preprocessed image.
 
     Returns:
-        str: The extracted text.
+        list of dict: Each dict contains word-level data including text, confidence, bounding box, and layout structure.
     """
-    return pytesseract.image_to_string(img, config=f"--oem 3 --psm {PSM}")
+    data = pytesseract.image_to_data(img, config=f"--oem 3 --psm {PSM}", output_type=pytesseract.Output.DICT)
+    words = []
+    n_boxes = len(data['text'])
+    for i in range(n_boxes):
+        text = data['text'][i].strip()
+        conf = data['conf'][i]
+        
+        # Level 5 corresponds to a word block in Tesseract's output
+        if int(data['level'][i]) == 5:
+            try:
+                confidence = float(conf)
+            except ValueError:
+                confidence = 0.0
+            
+            words.append({
+                'text': text,
+                'conf': confidence,
+                'left': data['left'][i],
+                'top': data['top'][i],
+                'width': data['width'][i],
+                'height': data['height'][i],
+                'line_num': data['line_num'][i],
+                'block_num': data['block_num'][i],
+                'par_num': data['par_num'][i]
+            })
+    return words
 
-def mark_text(img, out_name):
+def mark_text(img, words, out_name):
     """
-    Draws bounding boxes around detected characters and saves the annotated image.
+    Draws bounding boxes around detected words and saves the annotated image.
 
     Args:
         img (numpy.ndarray): The preprocessed image.
+        words (list of dict): Word-level data extracted by ocr().
         out_name (str): The file path to save the annotated image.
     """
     copy = img.copy()
-    h, w = copy.shape[:2]
-    for line in pytesseract.image_to_boxes(copy).splitlines():
-        char, x1, y1, x2, y2 = line.split()[:5]
-        x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
-        y1, y2 = h - y1, h - y2
-        cv2.rectangle(copy, (x1, y2), (x2, y1), (0, 0, 255), 2)
-        cv2.putText(copy, char, (x1, y2 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+    for w in words:
+        if not w['text']:
+            continue
+        x, y, width, height = w['left'], w['top'], w['width'], w['height']
+        # Low confidence words (< 60) get a red box, otherwise green
+        color = (0, 0, 255) if w['conf'] < 60 else (0, 255, 0)
+        cv2.rectangle(copy, (x, y), (x + width, y + height), color, 2)
+        cv2.putText(copy, w['text'], (x, max(y - 5, 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
     cv2.imwrite(out_name, copy)
 
 class SmartEditor:
@@ -154,6 +182,7 @@ class SmartEditor:
         ttk.Button(top, text="Preview Annotated", command=self.preview).grid(row=0, column=2, padx=5)
 
         self.text = scrolledtext.ScrolledText(main, font=("Segoe UI", 12), wrap=tk.WORD)
+        self.text.tag_configure("low_conf", background="#ffcccc", foreground="red")
         self.text.grid(row=1, column=0, sticky="nsew", padx=5, pady=5)
 
         bottom = ttk.Frame(main)
@@ -172,19 +201,65 @@ class SmartEditor:
 
     def extract(self):
         """
-        Executes the OCR pipeline on the uploaded image.
+        Executes the OCR pipeline on the uploaded image asynchronously.
         Preprocesses the image, extracts text, generates the annotated preview image,
         and populates the text area with the OCR results.
         """
         if not self.image_path:
             messagebox.showerror("Error", "Please upload an image first.")
             return
-        img = load_image(self.image_path)
-        processed = prepare(img)
-        text = ocr(processed)
+            
         self.text.delete("1.0", tk.END)
-        self.text.insert(tk.END, text)
-        mark_text(processed, ANNOTATED_FILENAME)
+        self.text.insert(tk.END, "Processing... Please wait.")
+        
+        def process_task():
+            try:
+                img = load_image(self.image_path)
+                processed = prepare(img)
+                words = ocr(processed)
+                mark_text(processed, words, ANNOTATED_FILENAME)
+                
+                # Safely update GUI from the main thread
+                self.root.after(0, self.update_gui_after_extraction, words)
+            except Exception as e:
+                self.root.after(0, lambda err=str(e): messagebox.showerror("Error", f"Extraction failed: {err}"))
+                
+        threading.Thread(target=process_task, daemon=True).start()
+
+    def update_gui_after_extraction(self, words):
+        """
+        Callback to update the text area with extracted words, formatting spaces,
+        newlines, and highlighting low-confidence words.
+        """
+        self.text.delete("1.0", tk.END)
+        current_block = -1
+        current_par = -1
+        current_line = -1
+        
+        for w in words:
+            if not w['text']:
+                continue
+                
+            if current_block != -1:
+                # Add spacing based on structural changes
+                if current_block != w['block_num'] or current_par != w['par_num']:
+                    self.text.insert(tk.END, "\n\n")
+                elif current_line != w['line_num']:
+                    self.text.insert(tk.END, "\n")
+                else:
+                    self.text.insert(tk.END, " ")
+            
+            current_block = w['block_num']
+            current_par = w['par_num']
+            current_line = w['line_num']
+            
+            # Apply highlighting tag for low confidence words
+            tag = "low_conf" if w['conf'] < 60 else None
+            if tag:
+                self.text.insert(tk.END, w['text'], (tag,))
+            else:
+                self.text.insert(tk.END, w['text'])
+                
         messagebox.showinfo("Done", "Extraction complete.")
 
     def preview(self):
