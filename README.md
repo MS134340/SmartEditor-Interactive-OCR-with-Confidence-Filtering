@@ -33,8 +33,7 @@
 - Tesseract OCR (Install & update path in script)
 - Libraries:
   - pytesseract
-  - opencv
-  - python
+  - opencv-python
   - numpy
   - tkinter
   - Pillow
@@ -43,8 +42,9 @@
 1. **Install Tesseract**
     Download: https://github.com/tesseract-ocr/tesseract
     Set path in script:
-    ```bash
+    ```python
     pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+    ```
 2. **Install Python dependencies**
     ```bash
     pip install opencv-python numpy pytesseract Pillow
